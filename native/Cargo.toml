@@ -1,0 +1,25 @@
+[package]
+name = "quickmd-native"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chardetng = "1.0.0"
+csv = "1.4.0"
+eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36.1"
+egui_commonmark = "0.25.0"
+egui_extras = { version = "0.36.1", features = ["all_loaders"] }
+encoding_rs = "0.8.35"
+image = { version = "0.25.10", features = ["png", "jpeg", "gif", "webp", "bmp"] }
+resvg = "0.48.1"
+rfd = "0.15"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

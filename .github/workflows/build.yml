@@ -1,0 +1,114 @@
+name: build
+
+# Windows・macOS・Linux の実行ファイルを作る。
+# 手元のディスクを使わずに Windows 版を得るのが主な目的である。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows (x64)
+            target: x86_64-pc-windows-msvc
+            suffix: .exe
+            archive: quickmd-windows-x64
+          - os: macos-latest
+            label: macOS (Apple Silicon)
+            target: aarch64-apple-darwin
+            suffix: ""
+            archive: quickmd-macos-arm64
+          - os: macos-13
+            label: macOS (Intel)
+            target: x86_64-apple-darwin
+            suffix: ""
+            archive: quickmd-macos-x64
+          - os: ubuntu-latest
+            label: Linux (x64)
+            target: x86_64-unknown-linux-gnu
+            suffix: ""
+            archive: quickmd-linux-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust を用意する
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: ビルドの中間物を使い回す
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            native
+            render
+          key: ${{ matrix.target }}
+
+      - name: Linux に要る開発用のファイルを入れる
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 本体をビルドする
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path native/Cargo.toml
+
+      - name: 図と数式の係をビルドする
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path render/Cargo.toml
+
+      - name: 配る形にまとめる
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "native/target/${{ matrix.target }}/release/quickmd-native${{ matrix.suffix }}" \
+             "dist/quickmd${{ matrix.suffix }}"
+          cp "render/target/${{ matrix.target }}/release/quickmd-render${{ matrix.suffix }}" \
+             "dist/quickmd-render${{ matrix.suffix }}"
+          cp README.md dist/
+          ls -la dist
+
+      - name: 成果物を置く
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: リリースを作る
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 圧縮する
+        run: |
+          cd artifacts
+          for d in */; do
+            name="${d%/}"
+            (cd "$d" && zip -r "../$name.zip" .)
+          done
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
