@@ -1,7 +1,7 @@
-//! 図と数式を作る係（別のプロセス）とのやり取り。
+//! レンダラ（別プロセス）とのやり取り。
 //!
 //! 本体は WebView を持たない。Mermaid の図と数式が本文に出てきて、しかも
-//! それが画面に入ったときに初めてこの係を起こす。だから起動の速さには関わらない。
+//! それが画面に入ったときに初めてレンダラを起動する。だから起動の速さには関わらない。
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 pub enum Art {
     /// 頼んで待っている
     Waiting,
-    /// できた絵
+    /// できた画像
     Ready(egui::TextureHandle),
     Failed(String),
 }
@@ -176,7 +176,7 @@ impl Renderer {
             return Art::Waiting;
         }
         if !self.ensure_started(ctx) {
-            return Art::Failed("図を作る係を起こせませんでした".into());
+            return Art::Failed("レンダラを起動できません".into());
         }
 
         let req = serde_json::json!({
@@ -194,10 +194,10 @@ impl Renderer {
             }
         }
         self.dead = true;
-        Art::Failed("図を作る係へ渡せませんでした".into())
+        Art::Failed("レンダラへ送信できません".into())
     }
 
-    /// 動画の1コマを頼む。画面に入ったときだけ呼ぶ。
+    /// 動画のサムネイルを要求する。画面に入ったときだけ呼ぶ。
     pub fn ask_thumb(&mut self, ctx: &egui::Context, path: &str) -> Art {
         let id = key("thumb", path, false, false);
 
@@ -234,7 +234,7 @@ impl Renderer {
             return Art::Waiting;
         }
         if !self.ensure_started(ctx) {
-            return Art::Failed("動画の係を起こせませんでした".into());
+            return Art::Failed("レンダラを起動できません".into());
         }
         let req = serde_json::json!({ "id": id, "kind": "thumb", "src": path, "at": 0.3 });
         if let Some(stdin) = self.stdin.as_mut() {
@@ -244,7 +244,7 @@ impl Renderer {
             }
         }
         self.dead = true;
-        Art::Failed("動画の係へ渡せませんでした".into())
+        Art::Failed("レンダラへ送信できません".into())
     }
 
     /// できあがっているかだけを見る（頼まない）。
@@ -260,9 +260,9 @@ impl Renderer {
     }
 }
 
-/// 受け取った PNG を絵に変える。
+/// 受け取った PNG をテクスチャに変える。
 fn decode_png(b64: &str) -> Result<egui::ColorImage, String> {
-    let bytes = base64_decode(b64).ok_or("受け取った絵を読めませんでした")?;
+    let bytes = base64_decode(b64).ok_or("サムネイルをデコードできません")?;
     let img = image::load_from_memory(&bytes)
         .map_err(|e| e.to_string())?
         .to_rgba8();
@@ -300,7 +300,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// SVG を絵に変える。フォントを読ませないと、図の中の文字が消える。
+/// SVG をラスタライズする。フォントを読ませないと、図の中の文字が消える。
 fn rasterize(svg: &str, ppp: f32) -> Result<egui::ColorImage, String> {
     let mut opt = resvg::usvg::Options::default();
     opt.fontdb_mut().load_system_fonts();
@@ -318,10 +318,10 @@ fn rasterize(svg: &str, ppp: f32) -> Result<egui::ColorImage, String> {
     let w = ((size.width() * scale).ceil() as u32).max(1);
     let h = ((size.height() * scale).ceil() as u32).max(1);
     if w > 8192 || h > 8192 {
-        return Err("図が大きすぎます".into());
+        return Err("画像が大きすぎます".into());
     }
 
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("絵の置き場を作れません")?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("画像バッファを確保できません")?;
     resvg::render(
         &tree,
         resvg::tiny_skia::Transform::from_scale(scale, scale),

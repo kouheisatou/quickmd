@@ -227,7 +227,7 @@ cargo build --release --target x86_64-pc-windows-msvc --manifest-path native/Car
 
 見つからない画像です。
 
-![ここには無いはずの絵](./no_such_image.png)
+![見つからない画像の見本](./no_such_image.png)
 
 ## 12. 動画と音
 

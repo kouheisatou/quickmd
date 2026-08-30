@@ -12,6 +12,8 @@ pub enum Block {
     Code { lang: String, src: String },
     /// 表。本文が折り返さない設定でも、ここだけは横へ流せるようにする。
     Table(String),
+    /// 箇条書きと番号つきの並び。丸や番号の位置を揃えるため、自分で描く。
+    List(crate::mdlist::List),
     /// 1行に置かれた絵・動画・音。右クリックで保存できるよう自分で描く。
     Media {
         alt: String,
@@ -183,6 +185,18 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+/// 直前が箇条書きの続きなら、字下げはコードではない。
+fn in_list_context(buf: &str) -> bool {
+    buf.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| {
+            let t = l.trim_start();
+            t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") || t.starts_with('>')
+        })
+        .unwrap_or(false)
+}
+
 /// `![説明](場所)` だけが置かれた行を見つける。
 /// 行の中に混ざっている絵は、そのまま本文として描く（そちらは文の一部だからである）。
 fn lone_media(line: &str) -> Option<(String, String)> {
@@ -223,6 +237,7 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut lines = text.lines().peekable();
+    let mut line_no = 0usize;
 
     while let Some(line) = lines.next() {
         let indented = line.starts_with(' ') || line.starts_with('\t');
@@ -245,6 +260,78 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
                         link,
                         kind,
                     });
+                    line_no += 1;
+                    continue;
+                }
+            }
+        }
+
+        // 4つの空白で字下げしたコードも、フェンスのコードと同じ見た目にする
+        if !fence && (line.starts_with("    ") || line.starts_with('\t')) && !in_list_context(&buf) {
+            let mut src = String::new();
+            let mut cur = Some(line);
+            loop {
+                let Some(l) = cur else { break };
+                let body = l.strip_prefix("    ").or_else(|| l.strip_prefix('\t'));
+                match body {
+                    Some(b) => {
+                        src.push_str(b);
+                        src.push('\n');
+                    }
+                    None if l.trim().is_empty() => src.push('\n'),
+                    None => break,
+                }
+                match lines.peek() {
+                    Some(n)
+                        if n.starts_with("    ") || n.starts_with('\t') || n.trim().is_empty() =>
+                    {
+                        cur = lines.next();
+                        line_no += 1;
+                    }
+                    _ => break,
+                }
+            }
+            if !src.trim().is_empty() {
+                if !buf.trim().is_empty() {
+                    out.push(Block::Markdown(std::mem::take(&mut buf)));
+                }
+                buf.clear();
+                out.push(Block::Code {
+                    lang: String::new(),
+                    src: src.trim_end().to_string(),
+                });
+                line_no += 1;
+                continue;
+            }
+        }
+
+        // 箇条書きは自分で受け持つ。丸や番号の縦位置を本文と揃えるためである。
+        if !fence {
+            let t = line.trim_start();
+            let deep = line.len() - t.len() < 8;
+            if deep && crate::mdlist::is_item(line) {
+                let start_line = line_no;
+                let mut block = String::from(line);
+                block.push('\n');
+                while let Some(next) = lines.peek() {
+                    let nt = next.trim_start();
+                    let ndeep = next.len() - nt.len() < 8;
+                    if ndeep && crate::mdlist::is_item(next) {
+                        block.push_str(next);
+                        block.push('\n');
+                        lines.next();
+                        line_no += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(list) = crate::mdlist::parse(&block, start_line) {
+                    if !buf.trim().is_empty() {
+                        out.push(Block::Markdown(std::mem::take(&mut buf)));
+                    }
+                    buf.clear();
+                    out.push(Block::List(list));
+                    line_no += 1;
                     continue;
                 }
             }
@@ -268,12 +355,14 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
             }
             buf.clear();
             out.push(Block::Table(rows));
+            line_no += 1;
             continue;
         }
 
         if !fence {
             buf.push_str(line);
             buf.push('\n');
+            line_no += 1;
             continue;
         }
 
@@ -286,7 +375,9 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
             .to_ascii_lowercase();
 
         let mut src = String::new();
+        line_no += 1;
         for l in lines.by_ref() {
+            line_no += 1;
             if l.trim_end().starts_with(&marker) && !l.starts_with(' ') {
                 break;
             }

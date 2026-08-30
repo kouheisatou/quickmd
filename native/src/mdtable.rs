@@ -131,22 +131,34 @@ pub fn draw(ui: &mut egui::Ui, t: &Table, dark: bool, max_width: f32, id: egui::
 }
 
 /// 中身の長さから、列ごとの幅を決める。
+/// 実際に描くときと同じフォントで測る。コードは等幅なので幅が変わる。
 fn measure(ui: &egui::Ui, t: &Table, font: &egui::FontId, pad: f32) -> Vec<f32> {
     /// 1つの列がとってよい上限。これを超えたら、その列の中で折り返す。
     const MAX_COL: f32 = 420.0;
     const MIN_COL: f32 = 48.0;
 
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
     let mut widths = vec![0.0f32; t.cols];
     let mut rows: Vec<&Vec<String>> = vec![&t.header];
     rows.extend(t.rows.iter());
 
     for row in rows {
         for (i, cell) in row.iter().enumerate().take(t.cols) {
-            let text = strip_marks(cell);
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(text, font.clone(), egui::Color32::WHITE);
-            widths[i] = widths[i].max(galley.rect.width());
+            let w: f32 = inline(cell)
+                .into_iter()
+                .map(|part| {
+                    let (text, f) = match part {
+                        Part::Text { text, code: true, .. } => (text, &mono),
+                        Part::Text { text, .. } => (text, font),
+                        Part::Link { text, .. } => (text, font),
+                    };
+                    ui.painter()
+                        .layout_no_wrap(text, f.clone(), egui::Color32::WHITE)
+                        .rect
+                        .width()
+                })
+                .sum();
+            widths[i] = widths[i].max(w);
         }
     }
     widths
@@ -246,16 +258,8 @@ fn row(
             .set(bg, egui::Shape::rect_filled(full, 0.0, c));
     }
 
-    // 列の境と、行の下の線。いちばん下の行だけは線を引かない（外枠になるため）。
-    let mut shapes: Vec<egui::Shape> = Vec::with_capacity(t.cols);
-    let mut x = full.left();
-    for w in widths.iter().take(t.cols.saturating_sub(1)) {
-        x += w;
-        shapes.push(egui::Shape::line_segment(
-            [egui::pos2(x, full.top()), egui::pos2(x, full.bottom())],
-            stroke,
-        ));
-    }
+    // 行の下の線だけを引く。縦線と外枠は引かない（文章の一部として読むものだからである）。
+    let mut shapes: Vec<egui::Shape> = Vec::with_capacity(1);
     let last = !is_header && index + 1 == t.rows.len();
     if !last {
         shapes.push(egui::Shape::line_segment(
@@ -303,7 +307,7 @@ fn cell(
     });
 }
 
-enum Part {
+pub enum Part {
     Text {
         text: String,
         bold: bool,
@@ -349,7 +353,7 @@ fn draw_part(ui: &mut egui::Ui, part: Part, l: &style::Look, is_header: bool) {
 }
 
 /// ます目の文字を、書き方ごとの切れ端に分ける。
-fn inline(src: &str) -> Vec<Part> {
+pub fn inline(src: &str) -> Vec<Part> {
     let mut out = Vec::new();
     let b: Vec<char> = src.chars().collect();
     let mut i = 0;
@@ -486,15 +490,4 @@ fn read_link(b: &[char], start: usize) -> Option<(String, String, usize)> {
     let url: String = b[i + 2..j].iter().collect();
     let url = url.split_whitespace().next().unwrap_or("").to_string();
     Some((text, url, j + 1))
-}
-
-/// 幅を測るために、飾りの印を落とした素の文字を作る。
-fn strip_marks(s: &str) -> String {
-    inline(s)
-        .into_iter()
-        .map(|p| match p {
-            Part::Text { text, .. } => text,
-            Part::Link { text, .. } => text,
-        })
-        .collect()
 }

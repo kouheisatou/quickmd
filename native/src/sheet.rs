@@ -1,7 +1,7 @@
 //! CSV を、簡単な表計算のように見せる画面。
 //!
 //! マークダウンの表（`mdtable`）とは作りが違う。あちらは文章の一部として読むもの、
-//! こちらは中身を選んで写したり、並べ替えたりして「使う」ものである。
+//! こちらは中身を選んでコピーしたり、並べ替えたりして「使う」ものである。
 //! そのため縦線を引き、行の番号と列の見出しを常に出し、範囲で選べるようにしている。
 
 use crate::style;
@@ -135,7 +135,7 @@ impl Sheet {
                 }
             });
 
-        // 写す。egui は Cmd/Ctrl + C を「写す」という知らせに変えて渡してくる。
+        // コピー。egui は Cmd/Ctrl + C を「コピー」という知らせに変えて渡してくる。
         let asked = ui.input(|i| {
             i.events.iter().any(|e| matches!(e, egui::Event::Copy))
                 || (i.modifiers.command && i.key_pressed(egui::Key::C))
@@ -174,7 +174,7 @@ impl Sheet {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(self.range().is_some(), egui::Button::new("選んだところを写す"))
+                    .add_enabled(self.range().is_some(), egui::Button::new("選んだところをコピー"))
                     .clicked()
                 {
                     if let Some(text) = self.selected_text(t) {

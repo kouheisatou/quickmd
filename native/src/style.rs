@@ -11,6 +11,26 @@ pub struct Look {
     pub accent: Color32,
 }
 
+/// 本文と同じ行の高さになる、等幅の字の大きさを求める。
+/// 行の高さは字の大きさにほぼ比例するので、比から逆算して少しだけ詰める。
+fn fit_mono_size(ctx: &egui::Context, body_size: f32) -> f32 {
+    let body = ctx.fonts_mut(|f| f.row_height(&FontId::new(body_size, FontFamily::Proportional)));
+    let mono = ctx.fonts_mut(|f| f.row_height(&FontId::new(body_size, FontFamily::Monospace)));
+    if mono <= 0.0 || body <= 0.0 {
+        return body_size - 2.0;
+    }
+    let mut size = body_size * (body / mono);
+    // 求めた大きさで測り直し、はみ出していたら少しずつ削る
+    for _ in 0..12 {
+        let h = ctx.fonts_mut(|f| f.row_height(&FontId::new(size, FontFamily::Monospace)));
+        if h <= body {
+            break;
+        }
+        size -= 0.25;
+    }
+    size.clamp(8.0, body_size)
+}
+
 pub fn look(dark: bool) -> Look {
     if dark {
         Look {
@@ -33,7 +53,11 @@ pub fn look(dark: bool) -> Look {
     }
 }
 
-pub fn apply(ctx: &egui::Context, dark: bool, font_size: f32, line_height: f32) {
+/// 画面の見た目を当てる。
+///
+/// `measure` は、フォントの大きさを実際に測ってよいかである。
+/// 立ち上がりの最初の1回は、まだフォントが用意されていないので測れない。
+pub fn apply(ctx: &egui::Context, dark: bool, font_size: f32, line_height: f32, measure: bool) {
     let theme = if dark { egui::Theme::Dark } else { egui::Theme::Light };
     ctx.set_theme(theme);
 
@@ -66,12 +90,22 @@ pub fn apply(ctx: &egui::Context, dark: bool, font_size: f32, line_height: f32) 
 
     let p = FontFamily::Proportional;
     let m = FontFamily::Monospace;
+
+    // 等幅は、本文と行の高さが揃うように大きさを決める。
+    // 揃っていないと、文の中にコードが混ざったときに行がでこぼこになり、
+    // コードの塊では行どうしが重なる。
+    let mono_size = if measure {
+        fit_mono_size(ctx, font_size)
+    } else {
+        font_size - 2.0
+    };
+
     style.text_styles = [
         (TextStyle::Body, FontId::new(font_size, p.clone())),
         (TextStyle::Button, FontId::new(font_size - 1.0, p.clone())),
         (TextStyle::Small, FontId::new(font_size - 3.0, p.clone())),
-        (TextStyle::Heading, FontId::new(font_size * 1.7, p)),
-        (TextStyle::Monospace, FontId::new(font_size - 2.0, m)),
+        (TextStyle::Heading, FontId::new(font_size * 1.7, p.clone())),
+        (TextStyle::Monospace, FontId::new(mono_size, m)),
     ]
     .into();
 

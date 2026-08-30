@@ -8,6 +8,7 @@ use std::time::Instant;
 
 mod doc;
 mod fonts;
+mod mdlist;
 mod mdtable;
 mod menu;
 #[cfg(target_os = "macos")]
@@ -92,6 +93,12 @@ struct App {
     recent: recent::Recent,
     /// CSV を開いたときの表の状態
     sheet: sheet::Sheet,
+    /// これから動かす巻き取りの量
+    scroll_by: f32,
+    /// 巻き取りを飛ばす先
+    scroll_to: Option<f32>,
+    /// 本文の見えている高さ
+    view_h: f32,
     /// 窓の名前を付け替える必要があるか
     title_dirty: bool,
     #[cfg(target_os = "macos")]
@@ -115,7 +122,7 @@ impl App {
             "light" => false,
             _ => cc.egui_ctx.theme() == egui::Theme::Dark,
         };
-        style::apply(&cc.egui_ctx, dark, settings.font_size, settings.line_height);
+        style::apply(&cc.egui_ctx, dark, settings.font_size, settings.line_height, false);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         marks.push(("style", ms(start)));
 
@@ -148,6 +155,9 @@ impl App {
             scroll_saved: -1.0,
             saved_at: start,
             sheet: sheet::Sheet::default(),
+            scroll_by: 0.0,
+            scroll_to: None,
+            view_h: 600.0,
             title_dirty: false,
             #[cfg(target_os = "macos")]
             mac_menu: macmenu::MacMenu::install(),
@@ -258,6 +268,7 @@ impl App {
             self.dark,
             self.settings.font_size,
             self.settings.line_height,
+            true,
         );
     }
 
@@ -340,8 +351,22 @@ impl App {
             }
         }
 
-        if let Some(a) = menu::bar(ui, self.dark, &list, has_doc, &self.doc.name) {
-            let ctx = ui.ctx().clone();
+        let ctx = ui.ctx().clone();
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let (picked, win) = menu::bar(ui, self.dark, &list, has_doc, &self.doc.name, maximized);
+        if let Some(w) = win {
+            match w {
+                menu::Window::Drag => ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag),
+                menu::Window::ToggleMaximize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized))
+                }
+                menu::Window::Minimize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true))
+                }
+                menu::Window::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+        if let Some(a) = picked {
             self.run_action(&ctx, a);
             return;
         }
@@ -391,11 +416,20 @@ impl App {
             longest_line_width(ui, blocks)
         };
 
+        // 作業の一覧の印が押されたら、元のファイルへ書き戻す
+        let mut toggled: Option<mdlist::Toggled> = None;
+
+        self.view_h = ui.available_height();
         let mut area = egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .hscroll(!wrap);
         if let Some(y) = self.restore_scroll {
             area = area.vertical_scroll_offset(y);
+        } else if let Some(y) = self.scroll_to.take() {
+            area = area.vertical_scroll_offset(y);
+        } else if self.scroll_by != 0.0 {
+            area = area.vertical_scroll_offset((self.scroll_now + self.scroll_by).max(0.0));
+            self.scroll_by = 0.0;
         }
         let out = area
             .show(ui, |ui| {
@@ -431,6 +465,11 @@ impl App {
                                         .render_math_fn(Some(&math))
                                         .show(ui, cache, &src);
                                 }
+                                Block::List(list) => {
+                                    if let Some(t) = mdlist::draw(ui, list, dark) {
+                                        toggled = Some(t);
+                                    }
+                                }
                                 Block::Table(src) => {
                                     draw_table(ui, cache, src, dark, inner);
                                 }
@@ -464,6 +503,13 @@ impl App {
                     });
                 });
             });
+
+        if let Some(t) = toggled {
+            let _ = mdlist::toggle_in_file(&self.doc.path, t.line, t.now);
+            let keep = out.state.offset.y;
+            self.doc = Doc::load(&self.doc.path.clone(), &self.settings.csv_encoding);
+            self.restore_scroll = Some(keep);
+        }
 
         self.scroll_now = out.state.offset.y;
         // 戻すのは開いた直後の1回だけにする。以降は手で動かせるようにする。
@@ -518,7 +564,7 @@ impl App {
                 .with_active(true),
             |ctx, _class| {
                 // 子の窓は色の設定を引き継がないので、ここでも同じものを当てる
-                style::apply(ctx, dark, font_size, line_height);
+                style::apply(ctx, dark, font_size, line_height, true);
                 // 親の上に重なるので、開いた直後は手前へ出す
                 if just_opened {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -583,6 +629,12 @@ impl App {
         for key in keys {
             match key {
                 egui::Key::W if cmd => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                egui::Key::ArrowDown => self.scroll_by = 60.0,
+                egui::Key::ArrowUp => self.scroll_by = -60.0,
+                egui::Key::PageDown => self.scroll_by = self.view_h * 0.9,
+                egui::Key::PageUp => self.scroll_by = -self.view_h * 0.9,
+                egui::Key::Home => self.scroll_to = Some(0.0),
+                egui::Key::End => self.scroll_to = Some(f32::INFINITY),
                 egui::Key::Comma if cmd => {
                     self.settings_open = true;
                     self.settings_just_opened = true;
@@ -620,6 +672,8 @@ impl eframe::App for App {
 
         if self.first_frame {
             self.first_frame = false;
+            // フォントが使えるようになったので、等幅の大きさを測り直す
+            self.apply_style(&ctx);
             self.report();
             if self.exit_after_ready {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -845,7 +899,7 @@ fn draw_mermaid(
     ui.add_space(10.0);
 
     if !enabled {
-        show_source(ui, src, &l, "Mermaid の図（描かない設定です）");
+        show_source(ui, src, &l, "Mermaid（設定で無効）");
         return;
     }
 
@@ -872,8 +926,8 @@ fn draw_mermaid(
     let p = ui.painter();
     p.rect_filled(rect, 6.0, l.bg_soft);
     let text = match &art {
-        Art::Failed(e) => format!("図を作れませんでした: {e}"),
-        _ => "図を作っています…".to_string(),
+        Art::Failed(e) => format!("Mermaid の表示エラー: {e}"),
+        _ => "Mermaid を描画中…".to_string(),
     };
     p.text(
         rect.center(),
@@ -886,7 +940,7 @@ fn draw_mermaid(
 }
 
 /// コードを枠に入れて描く。色は付けず、そのままの文字で出す。
-/// 右上の写しボタンで、中身をまるごと写し取れる。
+/// 右上のボタンで、中身をまるごとコピーできる。
 fn draw_code(ui: &mut egui::Ui, lang: &str, src: &str, dark: bool, width: f32) {
     let l = style::look(dark);
     let font = egui::TextStyle::Monospace.resolve(ui.style());
@@ -906,7 +960,7 @@ fn draw_code(ui: &mut egui::Ui, lang: &str, src: &str, dark: bool, width: f32) {
         .show(ui, |ui| {
             ui.set_min_width(width - 26.0);
 
-            // 言語の名前を左に、写しボタンを右に置く
+            // 言語の名前を左に、コピーのボタンを右に置く
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 if !lang.is_empty() {
@@ -918,7 +972,7 @@ fn draw_code(ui: &mut egui::Ui, lang: &str, src: &str, dark: bool, width: f32) {
                             .unwrap_or(f64::NEG_INFINITY)
                     });
                     let now = ui.input(|i| i.time);
-                    let label = if now - copied < 1.5 { "写しました" } else { "写す" };
+                    let label = if now - copied < 1.5 { "コピーしました" } else { "コピー" };
                     if ui
                         .add(egui::Button::new(egui::RichText::new(label).size(11.0)).small())
                         .clicked()
@@ -1008,7 +1062,7 @@ fn draw_media(
         let text = if exists {
             format!("{mark}  {name}")
         } else {
-            format!("{mark}  {name}（見つかりません）")
+            format!("ファイルが見つかりません: {name}")
         };
         egui::Frame::new()
             .fill(l.bg_soft)
@@ -1029,7 +1083,8 @@ fn draw_media(
                         }
                     });
                 });
-                if !alt.is_empty() {
+                // 見つからないときは、説明を出しても迷わせるだけなので出さない
+                if exists && !alt.is_empty() {
                     ui.add_space(2.0);
                     ui.colored_label(l.fg_dim, egui::RichText::new(alt).size(12.0));
                 }
@@ -1062,7 +1117,7 @@ fn draw_media(
                 openwith::edit(&p, "");
                 ui.close();
             }
-            if ui.button("場所を写す").clicked() {
+            if ui.button("場所をコピー").clicked() {
                 ui.ctx().copy_text(p.to_string_lossy().to_string());
                 ui.close();
             }
@@ -1126,7 +1181,7 @@ fn draw_video(
             p.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "動画を読み込んでいます…",
+                "サムネイルを生成中…",
                 egui::FontId::proportional(13.0),
                 l.fg_dim,
             );
@@ -1162,7 +1217,7 @@ fn draw_video(
 /// 再生のためのウィンドウを立てる。OS が持つ再生の仕組みをそのまま使う。
 fn play_video(path: &std::path::Path) {
     let Some(exe) = render::helper_path() else {
-        // 係が見つからないときは、OS の既定のアプリへ渡す
+        // レンダラが見つからないときは、OS の既定のアプリへ渡す
         openwith::edit(path, "");
         return;
     };
@@ -1175,7 +1230,7 @@ fn play_video(path: &std::path::Path) {
         .spawn();
 }
 
-/// 保存先を選んでもらい、元のファイルをそこへ写す。
+/// 保存先を選んでもらい、元のファイルをそこへコピーする。
 fn save_as(src: &std::path::Path) {
     let name = src
         .file_name()
@@ -1242,7 +1297,7 @@ fn longest_line_width(ui: &egui::Ui, blocks: &[Block]) -> f32 {
     (widest * 1.15 + 40.0).min(6000.0)
 }
 
-/// できた絵を、本文の幅に収めて描く。
+/// 画像を本文の幅に収めて描く。
 fn draw_texture(ui: &mut egui::Ui, tex: &egui::TextureHandle, max_width: f32) {
     let ppp = ui.ctx().pixels_per_point();
     let size = tex.size_vec2() / ppp.clamp(1.0, 3.0);
@@ -1354,11 +1409,16 @@ fn main() -> eframe::Result {
             .unwrap_or_default(),
     );
 
+    // 窓の上の帯を自分で描く環境では、OS の題名の帯を消す。
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([980.0, 820.0])
+        .with_min_inner_size([420.0, 320.0])
+        .with_title(title);
+    if menu::in_window() {
+        viewport = viewport.with_decorations(false).with_resizable(true);
+    }
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 820.0])
-            .with_min_inner_size([420.0, 320.0])
-            .with_title(title),
+        viewport,
         ..Default::default()
     };
     marks.push(("opts", ms(start)));

@@ -30,30 +30,41 @@ pub fn in_window() -> bool {
     !cfg!(target_os = "macos")
 }
 
-/// 帯の高さ。描かない環境では 0 になる。
-pub fn height() -> f32 {
-    if in_window() { 30.0 } else { 0.0 }
+/// 上の帯の高さ。ここが窓の題名の帯そのものになる。
+pub const BAR_H: f32 = 36.0;
+
+/// 窓そのものへの指示。題名の帯を自分で描くので、ここも自分で受け持つ。
+pub enum Window {
+    Drag,
+    ToggleMaximize,
+    Minimize,
+    Close,
 }
 
-/// 上の帯を描く。押された項目を返す。
+/// 窓の上の帯を描く。押された項目を返す。
 ///
-/// 三本線のボタンを1つだけ置き、押すと中の項目がぶら下がる。
-/// ブラウザや今どきのアプリが取っている形に合わせている。
+/// OS の題名の帯は消してあり、この帯がその代わりになる。
+/// 左に三本線のボタン、その右に開いているファイルの名前、右端に窓のボタンを置く。
 pub fn bar(
     ui: &mut egui::Ui,
     dark: bool,
     recent: &[std::path::PathBuf],
     has_doc: bool,
     title: &str,
-) -> Option<Action> {
+    maximized: bool,
+) -> (Option<Action>, Option<Window>) {
     if !in_window() {
-        return None;
+        return (None, None);
     }
     let l = style::look(dark);
     let mut action = None;
+    let mut window = None;
 
     let full = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(full, height()), egui::Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(full, BAR_H),
+        egui::Sense::click_and_drag(),
+    );
     ui.painter().rect_filled(rect, 0.0, l.bg_soft);
     ui.painter().hline(
         rect.x_range(),
@@ -61,14 +72,26 @@ pub fn bar(
         egui::Stroke::new(1.0, l.line),
     );
 
-    let mut child = ui.new_child(
+    // 帯の空いているところを引きずると窓が動く。二度押しで最大と元に戻す。
+    if resp.drag_started() {
+        window = Some(Window::Drag);
+    }
+    if resp.double_clicked() {
+        window = Some(Window::ToggleMaximize);
+    }
+
+    // ---- 左：三本線のボタン
+    let mut left = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(6.0, 3.0)))
+            .max_rect(egui::Rect::from_min_size(
+                rect.min + egui::vec2(6.0, 4.0),
+                egui::vec2(rect.width() * 0.7, BAR_H - 8.0),
+            ))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
 
-    egui::MenuBar::new().ui(&mut child, |ui| {
-        ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+    egui::MenuBar::new().ui(&mut left, |ui| {
+        ui.spacing_mut().button_padding = egui::vec2(9.0, 5.0);
         ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
 
@@ -148,12 +171,74 @@ pub fn bar(
             });
         });
 
-        // 開いているファイルの名前を、三本線の右に添える
         if !title.is_empty() {
-            ui.add_space(6.0);
-            ui.colored_label(l.fg_dim, egui::RichText::new(title).size(12.5));
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).size(12.5).color(l.fg))
+                    .truncate()
+                    .selectable(false),
+            );
         }
     });
 
-    action
+    // ---- 右：窓のボタン（最小化・最大化・閉じる）
+    let mut right = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(
+                egui::pos2(rect.right() - 140.0, rect.top()),
+                rect.max,
+            ))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    right.spacing_mut().item_spacing.x = 0.0;
+
+    if window_button(&mut right, "\u{2715}", l.fg, true).clicked() {
+        window = Some(Window::Close);
+    }
+    let mark = if maximized { "\u{2750}" } else { "\u{25a1}" };
+    if window_button(&mut right, mark, l.fg, false).clicked() {
+        window = Some(Window::ToggleMaximize);
+    }
+    if window_button(&mut right, "\u{2500}", l.fg, false).clicked() {
+        window = Some(Window::Minimize);
+    }
+
+    (action, window)
+}
+
+/// 窓のボタン1つ。閉じるだけは、触れたときに赤くする。
+fn window_button(
+    ui: &mut egui::Ui,
+    mark: &str,
+    fg: egui::Color32,
+    is_close: bool,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(44.0, BAR_H), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let hovered = response.hovered();
+    let p = ui.painter();
+    if hovered {
+        let bg = if is_close {
+            egui::Color32::from_rgb(232, 17, 35)
+        } else {
+            egui::Color32::from_gray(128).gamma_multiply(0.25)
+        };
+        p.rect_filled(rect, 0.0, bg);
+    }
+    let color = if hovered && is_close {
+        egui::Color32::WHITE
+    } else {
+        fg
+    };
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        mark,
+        egui::FontId::proportional(12.0),
+        color,
+    );
+    response
 }

@@ -81,7 +81,7 @@ window.MathJax = {
         const t = await thumbnail(req.src, req.at || 0.1);
         return reply({ id: req.id, ok: true, ...t });
       }
-      reply({ id: req.id, ok: false, error: '知らない種類です: ' + req.kind });
+      reply({ id: req.id, ok: false, error: '未対応の種類: ' + req.kind });
     } catch (e) {
       reply({ id: req.id, ok: false, error: String((e && e.message) || e) });
     }
@@ -109,7 +109,7 @@ window.MathJax = {
 
       v.addEventListener('error', () => {
         clearTimeout(timer);
-        fail('動画を読めませんでした');
+        fail('動画を読み込めません');
       });
 
       v.addEventListener('loadeddata', () => {

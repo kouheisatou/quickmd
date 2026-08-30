@@ -25,6 +25,21 @@ const CANDIDATES: &[(&str, u32)] = &[
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
 ];
 
+/// 等幅の候補。日本語も等幅で持っているものを選ぶ。
+/// 英数字と日本語で別のフォントになると、同じ行の中でベースラインがずれる。
+const MONO_CANDIDATES: &[(&str, u32)] = &[
+    // ---- Windows
+    ("C:\\Windows\\Fonts\\msgothic.ttc", 0),   // MS ゴシック（等幅）
+    ("C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc", 0),
+    // ---- macOS
+    // 標準では日本語の等幅フォントが無い。Osaka-Mono を入れている環境でだけ拾う。
+    ("/Library/Fonts/Osaka.ttf", 0),
+    ("/System/Library/Fonts/Supplemental/Osaka.ttf", 0),
+    // ---- Linux
+    ("/usr/share/fonts/opentype/noto/NotoSansMonoCJKjp-Regular.otf", 0),
+    ("/usr/share/fonts/truetype/fonts-japanese-mincho.ttf", 0),
+];
+
 pub fn install(ctx: &egui::Context) {
     let Some((path, index)) = CANDIDATES
         .iter()
@@ -49,12 +64,56 @@ pub fn install(ctx: &egui::Context) {
         .entry(egui::FontFamily::Proportional)
         .or_default()
         .insert(0, "jp".to_owned());
-    // 等幅のほうは、コードの見た目を保つために元のフォントを先に使い、
-    // 日本語が出てきたときだけこちらへ落とす。
-    fonts
-        .families
-        .entry(egui::FontFamily::Monospace)
-        .or_default()
-        .push("jp".to_owned());
+    // 等幅は、日本語も等幅で持つフォントがあればそれだけを使う。
+    // 英数字と日本語で別のフォントになると、同じ行でベースラインがずれる。
+    // 日本語を持たないサブセットのフォントが混ざることがあるので、
+    // 中身の大きさで見分ける（日本語を持つものは数MBある）。
+    let mono = MONO_CANDIDATES
+        .iter()
+        .filter(|(p, _)| std::path::Path::new(p).exists())
+        .find_map(|(p, i)| {
+            let b = std::fs::read(p).ok()?;
+            (b.len() > 500_000).then_some((b, *i))
+        });
+
+    match mono {
+        Some((bytes, index)) => {
+            let mut d = egui::FontData::from_owned(bytes);
+            d.index = index;
+            fonts
+                .font_data
+                .insert("jp-mono".to_owned(), std::sync::Arc::new(d));
+            let m = fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default();
+            m.insert(0, "jp-mono".to_owned());
+            m.push("jp".to_owned());
+        }
+        None => {
+            // 等幅の日本語フォントが無いときは、英数字は等幅のまま、日本語だけを
+            // このフォントで描く。設計が違うのでベースラインが合わないぶんを補正する。
+            let offset: f32 = std::env::var("QUICKMD_MONO_OFFSET")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-0.09);
+            let mut d = egui::FontData::from_owned(
+                std::fs::read(path).unwrap_or_default(),
+            );
+            d.index = *index;
+            let d = d.tweak(egui::FontTweak {
+                y_offset_factor: offset,
+                ..Default::default()
+            });
+            fonts
+                .font_data
+                .insert("jp-mono".to_owned(), std::sync::Arc::new(d));
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push("jp-mono".to_owned());
+        }
+    }
     ctx.set_fonts(fonts);
 }
