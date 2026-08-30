@@ -8,6 +8,7 @@ use std::time::Instant;
 
 mod doc;
 mod fonts;
+mod mdtable;
 mod menu;
 #[cfg(target_os = "macos")]
 mod macmenu;
@@ -15,6 +16,7 @@ mod openwith;
 mod recent;
 mod render;
 mod settings;
+mod sheet;
 mod state;
 mod style;
 mod table;
@@ -88,6 +90,8 @@ struct App {
     scroll_saved: f32,
     saved_at: std::time::Instant,
     recent: recent::Recent,
+    /// CSV を開いたときの表の状態
+    sheet: sheet::Sheet,
     /// 窓の名前を付け替える必要があるか
     title_dirty: bool,
     #[cfg(target_os = "macos")]
@@ -143,6 +147,7 @@ impl App {
             scroll_now: 0.0,
             scroll_saved: -1.0,
             saved_at: start,
+            sheet: sheet::Sheet::default(),
             title_dirty: false,
             #[cfg(target_os = "macos")]
             mac_menu: macmenu::MacMenu::install(),
@@ -178,6 +183,7 @@ impl App {
         self.scroll_now = 0.0;
         self.scroll_saved = -1.0;
         self.recent.push(path);
+        self.sheet = sheet::Sheet::default();
         self.title_dirty = true;
     }
 
@@ -334,7 +340,7 @@ impl App {
             }
         }
 
-        if let Some(a) = menu::bar(ui, self.dark, &list, has_doc) {
+        if let Some(a) = menu::bar(ui, self.dark, &list, has_doc, &self.doc.name) {
             let ctx = ui.ctx().clone();
             self.run_action(&ctx, a);
             return;
@@ -404,6 +410,9 @@ impl App {
                     ui.add_space(pad);
                     ui.vertical(|ui| {
                         ui.set_max_width(inner);
+                        // 箇条書きの丸は文字と同じ高さの枠に描かれる。
+                        // 文字を枠の上端へ合わせると、丸と文字の高さが揃う。
+                        ui.style_mut().override_text_valign = Some(egui::Align::TOP);
                         ui.add_space(28.0);
                         for block in blocks {
                             match block {
@@ -423,7 +432,7 @@ impl App {
                                         .show(ui, cache, &src);
                                 }
                                 Block::Table(src) => {
-                                    draw_table(ui, cache, src, inner);
+                                    draw_table(ui, cache, src, dark, inner);
                                 }
                                 Block::Code { lang, src } => {
                                     draw_code(ui, lang, src, dark, inner);
@@ -465,68 +474,16 @@ impl App {
 
     fn table_body(&mut self, ui: &mut egui::Ui) {
         let Some(t) = &self.doc.table else { return };
-        let l = style::look(self.dark);
-        ui.add_space(16.0);
-
-        let cols = t.cols;
-        let text_height = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
-
-        egui::Frame::new().inner_margin(egui::Margin {
-            left: 24, right: 24, top: 0, bottom: 0,
-        }).show(ui, |ui| {
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            let mut builder = egui_extras::TableBuilder::new(ui)
-                .striped(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(egui_extras::Column::auto().at_least(36.0));
-            for _ in 0..cols {
-                builder = builder.column(egui_extras::Column::auto().at_least(60.0).clip(true));
-            }
-            builder
-                .header(text_height + 4.0, |mut header| {
-                    header.col(|ui| {
-                        ui.label("");
-                    });
-                    for i in 0..cols {
-                        header.col(|ui| {
-                            let s = t.header.get(i).cloned().unwrap_or_default();
-                            ui.strong(s);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(text_height, t.rows.len(), |mut row| {
-                        let i = row.index();
-                        row.col(|ui| {
-                            ui.colored_label(l.fg_dim, (i + 1).to_string());
-                        });
-                        for c in 0..cols {
-                            row.col(|ui| {
-                                let s = t.rows[i].get(c).cloned().unwrap_or_default();
-                                if table::is_numeric(&s) {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(s);
-                                        },
-                                    );
-                                } else {
-                                    ui.label(s);
-                                }
-                            });
-                        }
-                    });
-                });
-        });
-
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(6.0);
-        ui.colored_label(l.fg_dim, t.summary());
-        if t.truncated {
-            ui.colored_label(l.fg_dim, "行が多いため、先頭だけを表示しています。");
-        }
-        });
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 16,
+                right: 16,
+                top: 12,
+                bottom: 12,
+            })
+            .show(ui, |ui| {
+                self.sheet.show(ui, t, self.dark);
+            });
     }
 
     // --------------------------------------------------------------- 設定の窓
@@ -1231,35 +1188,36 @@ fn save_as(src: &std::path::Path) {
     }
 }
 
-/// 同じアプリをもう1つ立ち上げて、そのファイルを開く。
+/// 同じアプリをもう1つ立ち上げる。ファイルを渡さなければ、開くための画面が出る。
 fn open_new_window(path: &std::path::Path) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let _ = std::process::Command::new(exe)
-        .arg(path)
+    let mut cmd = std::process::Command::new(exe);
+    if !path.as_os_str().is_empty() {
+        cmd.arg(path);
+    }
+    let _ = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
 }
 
-/// 表。本文の幅に収まらないときだけ、そこだけ横へ流せるようにする。
+/// 表。自分で組んで描く。表として読めなければ、そのまま本文として渡す。
 fn draw_table(
     ui: &mut egui::Ui,
     cache: &mut egui_commonmark::CommonMarkCache,
     src: &str,
+    dark: bool,
     width: f32,
 ) {
-    ui.add_space(4.0);
-    egui::ScrollArea::horizontal()
-        .id_salt(egui::Id::new(("table", src)))
-        .auto_shrink([false, true])
-        .max_width(width)
-        .show(ui, |ui| {
+    match mdtable::parse(src) {
+        Some(t) => mdtable::draw(ui, &t, dark, width, egui::Id::new(("table", src))),
+        None => {
             egui_commonmark::CommonMarkViewer::new().show(ui, cache, src);
-        });
-    ui.add_space(4.0);
+        }
+    }
 }
 
 /// 折り返さないときの、本文の幅。いちばん長い行に合わせる。
