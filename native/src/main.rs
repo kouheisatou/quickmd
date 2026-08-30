@@ -8,12 +8,17 @@ use std::time::Instant;
 
 mod doc;
 mod fonts;
+mod menu;
+#[cfg(target_os = "macos")]
+mod macmenu;
 mod openwith;
+mod recent;
 mod render;
 mod settings;
 mod state;
 mod style;
 mod table;
+mod welcome;
 
 use doc::{Block, Doc, Kind};
 use render::{Art, Renderer};
@@ -82,6 +87,11 @@ struct App {
     scroll_now: f32,
     scroll_saved: f32,
     saved_at: std::time::Instant,
+    recent: recent::Recent,
+    /// 窓の名前を付け替える必要があるか
+    title_dirty: bool,
+    #[cfg(target_os = "macos")]
+    mac_menu: Option<macmenu::MacMenu>,
 }
 
 impl App {
@@ -133,6 +143,16 @@ impl App {
             scroll_now: 0.0,
             scroll_saved: -1.0,
             saved_at: start,
+            title_dirty: false,
+            #[cfg(target_os = "macos")]
+            mac_menu: macmenu::MacMenu::install(),
+            recent: {
+                let mut r = recent::load();
+                if let Some(p) = &args.file {
+                    r.push(p);
+                }
+                r
+            },
         }
     }
 
@@ -147,6 +167,57 @@ impl App {
                     .collect::<Vec<_>>(),
             });
             let _ = std::fs::write(p, serde_json::to_string_pretty(&out).unwrap_or_default());
+        }
+    }
+
+    /// 別のファイルへ開き直す。
+    fn open(&mut self, path: &std::path::Path) {
+        self.remember_scroll(true);
+        self.doc = Doc::load(path, &self.settings.csv_encoding);
+        self.restore_scroll = self.positions.get(&self.doc.path).filter(|v| *v > 1.0);
+        self.scroll_now = 0.0;
+        self.scroll_saved = -1.0;
+        self.recent.push(path);
+        self.title_dirty = true;
+    }
+
+    /// 開くファイルを選んでもらう。
+    fn ask_open(&mut self, kind: Option<welcome::Pick>) {
+        let mut d = rfd::FileDialog::new();
+        d = match kind {
+            Some(welcome::Pick::Table) => d
+                .add_filter("CSV・TSV", &["csv", "tsv"])
+                .add_filter("すべて", &["*"]),
+            _ => d
+                .add_filter("マークダウン", &["md", "markdown", "mdown", "mkd", "mdx"])
+                .add_filter("CSV・TSV", &["csv", "tsv"])
+                .add_filter("すべて", &["*"]),
+        };
+        if let Some(dir) = self.doc.path.parent() {
+            if dir.is_dir() {
+                d = d.set_directory(dir);
+            }
+        }
+        if let Some(p) = d.pick_file() {
+            self.open(&p);
+        }
+    }
+
+    /// メニューで選ばれたことを行う。
+    fn run_action(&mut self, ctx: &egui::Context, action: menu::Action) {
+        match action {
+            menu::Action::NewWindow => open_new_window(std::path::Path::new("")),
+            menu::Action::OpenFile => self.ask_open(None),
+            menu::Action::OpenRecent(p) => self.open(&p),
+            menu::Action::ClearRecent => self.recent.clear(),
+            menu::Action::Settings => {
+                self.settings_open = true;
+                self.settings_just_opened = true;
+            }
+            menu::Action::Reload => self.reload(),
+            menu::Action::EditExternal => openwith::edit(&self.doc.path, &self.settings.editor),
+            menu::Action::RevealInFolder => openwith::reveal(&self.doc.path),
+            menu::Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
@@ -184,52 +255,101 @@ impl App {
         );
     }
 
-    // --------------------------------------------------------------- 上のタブ
+    /// 本文のリンクが押されたときの行き先を決める。
+    /// マークダウンと CSV は新しいウィンドウで開き、それ以外は OS の既定のアプリへ渡す。
+    fn handle_link(&mut self, ctx: &egui::Context) {
+        // egui はリンクの押下を「命令」として溜める。ここで横取りして自分で行き先を決める。
+        let url = ctx.output_mut(|o| {
+            let mut found = None;
+            o.commands.retain(|c| match c {
+                egui::OutputCommand::OpenUrl(u) => {
+                    found = Some(u.url.clone());
+                    false
+                }
+                _ => true,
+            });
+            found
+        });
+        let Some(url) = url else {
+            return;
+        };
 
-    fn tab_bar(&self, ui: &mut egui::Ui) {
-        let l = style::look(self.dark);
-        let full = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(full, 34.0), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, 0.0, l.bg_soft);
-        p.hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            egui::Stroke::new(1.0, l.line),
-        );
-
-        if self.doc.name.is_empty() {
+        // 同じ文書の中の飛び先は、リンクではなく巻き取りで扱う
+        if url.starts_with('#') {
             return;
         }
-        let font = egui::FontId::proportional(12.5);
-        let galley = ui.painter().layout_no_wrap(
-            self.doc.name.clone(),
-            font.clone(),
-            l.fg,
-        );
-        let w = (galley.rect.width() + 32.0).min(320.0);
-        let tab = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
-            egui::vec2(w, 28.0),
-        );
-        let p = ui.painter();
-        p.rect_filled(tab, egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, l.bg);
-        p.rect_stroke(
-            tab,
-            egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 },
-            egui::Stroke::new(1.0, l.line),
-            egui::StrokeKind::Inside,
-        );
-        p.galley(
-            egui::pos2(tab.left() + 16.0, tab.center().y - galley.rect.height() / 2.0),
-            galley,
-            l.fg,
-        );
+
+        let remote = url.starts_with("http://")
+            || url.starts_with("https://")
+            || url.starts_with("mailto:")
+            || url.starts_with("data:");
+        if remote {
+            openwith::open_url(&url);
+            return;
+        }
+
+        let base = self
+            .doc
+            .path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let target = doc::resolve(&base, url.trim_start_matches("file://"));
+
+        if !target.exists() {
+            return;
+        }
+        if target.is_dir() {
+            openwith::open_folder(&target);
+            return;
+        }
+        if doc::is_readable(&target) {
+            open_new_window(&target);
+        } else if doc::media_kind(&target.to_string_lossy()) == Some(doc::MediaKind::Video) {
+            play_video(&target);
+        } else {
+            openwith::edit(&target, "");
+        }
     }
 
     // ----------------------------------------------------------------- 本文
 
     fn body(&mut self, ui: &mut egui::Ui) {
+        let list = self.recent.list();
+        let has_doc = !self.doc.path.as_os_str().is_empty();
+
+        // macOS では画面上端のメニューから来る
+        #[cfg(target_os = "macos")]
+        {
+            let picked = if let Some(m) = self.mac_menu.as_mut() {
+                m.sync_recent(&list);
+                m.poll()
+            } else {
+                None
+            };
+            if let Some(a) = picked {
+                let ctx = ui.ctx().clone();
+                self.run_action(&ctx, a);
+                return;
+            }
+        }
+
+        if let Some(a) = menu::bar(ui, self.dark, &list, has_doc) {
+            let ctx = ui.ctx().clone();
+            self.run_action(&ctx, a);
+            return;
+        }
+
+        if !has_doc {
+            if let Some(pick) = welcome::show(ui, self.dark, &list) {
+                match pick {
+                    welcome::Pick::Recent(p) => self.open(&p),
+                    other => self.ask_open(Some(other)),
+                }
+            }
+            return;
+        }
+
         if let Some(err) = &self.doc.error {
             ui.add_space(24.0);
             ui.heading("開けませんでした");
@@ -256,15 +376,30 @@ impl App {
         let renderer = &self.renderer;
         let settings = &self.settings;
 
-        let mut area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
+        let wrap = self.settings.wrap;
+        // 折り返さないときは、いちばん長い行に合わせて横へ広げる。
+        // その幅を先に決めておかないと、毎回の描き直しで幅が揺れる。
+        let long_line = if wrap {
+            0.0
+        } else {
+            longest_line_width(ui, blocks)
+        };
+
+        let mut area = egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .hscroll(!wrap);
         if let Some(y) = self.restore_scroll {
             area = area.vertical_scroll_offset(y);
         }
         let out = area
             .show(ui, |ui| {
                 let avail = ui.available_width();
-                let pad = ((avail - width) / 2.0).max(16.0);
-                let inner = (avail - pad * 2.0).max(200.0);
+                let (pad, inner) = if wrap {
+                    let pad = ((avail - width) / 2.0).max(16.0);
+                    (pad, (avail - pad * 2.0).max(200.0))
+                } else {
+                    (32.0, long_line.max(avail - 64.0))
+                };
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
                     ui.vertical(|ui| {
@@ -286,6 +421,9 @@ impl App {
                                         .max_image_width(Some(inner as usize))
                                         .render_math_fn(Some(&math))
                                         .show(ui, cache, &src);
+                                }
+                                Block::Table(src) => {
+                                    draw_table(ui, cache, src, inner);
                                 }
                                 Block::Code { lang, src } => {
                                     draw_code(ui, lang, src, dark, inner);
@@ -487,6 +625,7 @@ impl App {
 
         for key in keys {
             match key {
+                egui::Key::W if cmd => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 egui::Key::Comma if cmd => {
                     self.settings_open = true;
                     self.settings_just_opened = true;
@@ -513,8 +652,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.tab_bar(ui);
+        if self.title_dirty {
+            self.title_dirty = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(window_title(&self.doc.name)));
+        }
         self.body(ui);
+        self.handle_link(&ctx);
 
         self.remember_scroll(false);
 
@@ -1088,6 +1231,59 @@ fn save_as(src: &std::path::Path) {
     }
 }
 
+/// 同じアプリをもう1つ立ち上げて、そのファイルを開く。
+fn open_new_window(path: &std::path::Path) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = std::process::Command::new(exe)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// 表。本文の幅に収まらないときだけ、そこだけ横へ流せるようにする。
+fn draw_table(
+    ui: &mut egui::Ui,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    src: &str,
+    width: f32,
+) {
+    ui.add_space(4.0);
+    egui::ScrollArea::horizontal()
+        .id_salt(egui::Id::new(("table", src)))
+        .auto_shrink([false, true])
+        .max_width(width)
+        .show(ui, |ui| {
+            egui_commonmark::CommonMarkViewer::new().show(ui, cache, src);
+        });
+    ui.add_space(4.0);
+}
+
+/// 折り返さないときの、本文の幅。いちばん長い行に合わせる。
+/// 表とコードは自分で横へ流すので、ここでは数えない。
+fn longest_line_width(ui: &egui::Ui, blocks: &[Block]) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut widest: f32 = 0.0;
+    for block in blocks {
+        let Block::Markdown(src) = block else { continue };
+        for line in src.lines() {
+            let t = line.trim_end();
+            if t.is_empty() || t.starts_with('|') {
+                continue;
+            }
+            let galley = ui
+                .painter()
+                .layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE);
+            widest = widest.max(galley.rect.width());
+        }
+    }
+    // 見出しは本文より大きいので、少し余裕を持たせる
+    (widest * 1.15 + 40.0).min(6000.0)
+}
+
 /// できた絵を、本文の幅に収めて描く。
 fn draw_texture(ui: &mut egui::Ui, tex: &egui::TextureHandle, max_width: f32) {
     let ppp = ui.ctx().pixels_per_point();
@@ -1173,6 +1369,15 @@ fn fix_relative_images(src: &str, base: Option<&std::path::Path>) -> String {
     out
 }
 
+/// 窓の名前。開いていないときはアプリ名だけにする。
+fn window_title(name: &str) -> String {
+    if name.is_empty() {
+        "QuickMD".to_string()
+    } else {
+        format!("QuickMD — {name}")
+    }
+}
+
 fn ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
@@ -1182,12 +1387,14 @@ fn main() -> eframe::Result {
     let args = parse_args();
     let mut marks = vec![("args", ms(start))];
 
-    let title = args
-        .file
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|s| format!("QuickMD — {}", s.to_string_lossy()))
-        .unwrap_or_else(|| "QuickMD".into());
+    let title = window_title(
+        &args
+            .file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    );
 
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

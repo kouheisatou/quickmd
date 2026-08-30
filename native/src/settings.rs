@@ -10,8 +10,10 @@ pub struct Settings {
     pub theme: String,
     pub font_size: f32,
     pub line_height: f32,
-    /// 本文の幅（ピクセル）
+    /// 本文の幅（ピクセル）。折り返すときだけ効く。
     pub content_width: f32,
+    /// 右端で折り返すか。切ると、長い行は横へ流れる。
+    pub wrap: bool,
     /// 編集を開くアプリ。空なら OS の既定のアプリを使う。
     pub editor: String,
     pub enable_math: bool,
@@ -27,6 +29,7 @@ impl Default for Settings {
             font_size: 16.0,
             line_height: 1.6,
             content_width: 860.0,
+            wrap: true,
             editor: String::new(),
             enable_math: true,
             enable_mermaid: true,

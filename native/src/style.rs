@@ -84,5 +84,12 @@ pub fn apply(ctx: &egui::Context, dark: bool, font_size: f32, line_height: f32) 
     style.spacing.scroll.floating = false;
     style.spacing.scroll.bar_inner_margin = 3.0;
 
+    // 開発中に出る当たり枠の知らせは、読む邪魔になるので出さない。
+    // この欄は開発用のビルドにしか無いので、そのときだけ触る。
+    #[cfg(debug_assertions)]
+    {
+        style.debug = Default::default();
+    }
+
     ctx.set_style_of(theme, style);
 }

@@ -17,6 +17,11 @@ rfd = "0.15"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
+# macOS の画面いちばん上のメニューバーを出すために使う。
+# 他の環境ではウィンドウの中に自分で帯を描くので、要らない。
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.19.3"
+
 [profile.release]
 opt-level = 3
 lto = true

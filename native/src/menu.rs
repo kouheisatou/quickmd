@@ -1,0 +1,135 @@
+//! 上の帯のメニュー。
+//!
+//! macOS では画面いちばん上のメニューバーがそれにあたるので、帯は出さない。
+//! Windows と Linux では、ウィンドウの中に自分で帯を描く。
+
+use crate::style;
+
+/// メニューから選ばれた行い。
+#[derive(Clone, PartialEq)]
+pub enum Action {
+    NewWindow,
+    OpenFile,
+    OpenRecent(std::path::PathBuf),
+    ClearRecent,
+    Settings,
+    Reload,
+    EditExternal,
+    RevealInFolder,
+    Close,
+}
+
+/// この環境でウィンドウの中に帯を描くか。
+pub const IN_WINDOW: bool = !cfg!(target_os = "macos");
+
+/// 帯の高さ。描かない環境では 0 になる。
+pub fn height() -> f32 {
+    if IN_WINDOW { 30.0 } else { 0.0 }
+}
+
+/// 上の帯を描く。押された項目を返す。
+pub fn bar(
+    ui: &mut egui::Ui,
+    dark: bool,
+    recent: &[std::path::PathBuf],
+    has_doc: bool,
+) -> Option<Action> {
+    if !IN_WINDOW {
+        return None;
+    }
+    let l = style::look(dark);
+    let mut action = None;
+
+    let full = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(full, height()), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, l.bg_soft);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, l.line),
+    );
+
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    child.style_mut().visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+
+    egui::MenuBar::new().ui(&mut child, |ui| {
+        ui.menu_button("ファイル", |ui| {
+            if ui.button("新しいウィンドウ").clicked() {
+                action = Some(Action::NewWindow);
+                ui.close();
+            }
+            if ui.button("開く…").clicked() {
+                action = Some(Action::OpenFile);
+                ui.close();
+            }
+            ui.menu_button("最近開いたもの", |ui| {
+                if recent.is_empty() {
+                    ui.add_enabled(false, egui::Button::new("まだありません"));
+                } else {
+                    for p in recent.iter().take(15) {
+                        let name = p
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if ui.button(name).on_hover_text(p.to_string_lossy()).clicked() {
+                            action = Some(Action::OpenRecent(p.clone()));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("履歴を消す").clicked() {
+                        action = Some(Action::ClearRecent);
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            if ui
+                .add_enabled(has_doc, egui::Button::new("閉じる"))
+                .clicked()
+            {
+                action = Some(Action::Close);
+                ui.close();
+            }
+        });
+
+        ui.menu_button("表示", |ui| {
+            if ui
+                .add_enabled(has_doc, egui::Button::new("読み直す"))
+                .clicked()
+            {
+                action = Some(Action::Reload);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("設定…").clicked() {
+                action = Some(Action::Settings);
+                ui.close();
+            }
+        });
+
+        ui.menu_button("ファイルの操作", |ui| {
+            if ui
+                .add_enabled(has_doc, egui::Button::new("編集するアプリで開く"))
+                .clicked()
+            {
+                action = Some(Action::EditExternal);
+                ui.close();
+            }
+            if ui
+                .add_enabled(has_doc, egui::Button::new("ファイルのある場所を開く"))
+                .clicked()
+            {
+                action = Some(Action::RevealInFolder);
+                ui.close();
+            }
+        });
+    });
+
+    action
+}

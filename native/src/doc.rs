@@ -10,6 +10,8 @@ pub enum Block {
     Mermaid { src: String },
     /// コード。色は付けず、そのままの文字で出す。
     Code { lang: String, src: String },
+    /// 表。本文が折り返さない設定でも、ここだけは横へ流せるようにする。
+    Table(String),
     /// 1行に置かれた絵・動画・音。右クリックで保存できるよう自分で描く。
     Media {
         alt: String,
@@ -62,6 +64,14 @@ pub struct Doc {
 }
 
 pub const TABLE_EXT: &[&str] = &["csv", "tsv"];
+pub const MD_EXT: &[&str] = &["md", "markdown", "mdown", "mkd", "mdx"];
+
+/// このアプリで開けるものか。
+pub fn is_readable(p: &Path) -> bool {
+    ext(p)
+        .map(|e| MD_EXT.contains(&e.as_str()) || TABLE_EXT.contains(&e.as_str()))
+        .unwrap_or(false)
+}
 
 fn ext(p: &Path) -> Option<String> {
     p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
@@ -212,7 +222,7 @@ pub fn decode(bytes: &[u8]) -> String {
 fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
     let mut out = Vec::new();
     let mut buf = String::new();
-    let mut lines = text.lines();
+    let mut lines = text.lines().peekable();
 
     while let Some(line) = lines.next() {
         let indented = line.starts_with(' ') || line.starts_with('\t');
@@ -238,6 +248,27 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
                     continue;
                 }
             }
+        }
+
+        // 表は自分で受け持つ。本文の幅からはみ出すときに、ここだけ横へ流すためである。
+        if !fence && !indented && line.trim_start().starts_with('|') {
+            let mut rows = String::from(line);
+            rows.push('\n');
+            while let Some(next) = lines.peek() {
+                if next.trim_start().starts_with('|') {
+                    rows.push_str(next);
+                    rows.push('\n');
+                    lines.next();
+                } else {
+                    break;
+                }
+            }
+            if !buf.trim().is_empty() {
+                out.push(Block::Markdown(std::mem::take(&mut buf)));
+            }
+            buf.clear();
+            out.push(Block::Table(rows));
+            continue;
         }
 
         if !fence {
