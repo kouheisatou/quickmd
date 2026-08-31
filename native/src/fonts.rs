@@ -91,28 +91,13 @@ pub fn install(ctx: &egui::Context) {
             m.push("jp".to_owned());
         }
         None => {
-            // 等幅の日本語フォントが無いときは、英数字は等幅のまま、日本語だけを
-            // このフォントで描く。設計が違うのでベースラインが合わないぶんを補正する。
-            let offset: f32 = std::env::var("QUICKMD_MONO_OFFSET")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(-0.09);
-            let mut d = egui::FontData::from_owned(
-                std::fs::read(path).unwrap_or_default(),
-            );
-            d.index = *index;
-            let d = d.tweak(egui::FontTweak {
-                y_offset_factor: offset,
-                ..Default::default()
-            });
-            fonts
-                .font_data
-                .insert("jp-mono".to_owned(), std::sync::Arc::new(d));
+            // 等幅の日本語フォントが無いときは、英数字は等幅のまま、
+            // 日本語だけをこのフォントで描く。ベースラインは両者で揃っている。
             fonts
                 .families
                 .entry(egui::FontFamily::Monospace)
                 .or_default()
-                .push("jp-mono".to_owned());
+                .push("jp".to_owned());
         }
     }
     ctx.set_fonts(fonts);

@@ -122,7 +122,12 @@ pub fn apply(ctx: &egui::Context, dark: bool, font_size: f32, line_height: f32, 
     // この欄は開発用のビルドにしか無いので、そのときだけ触る。
     #[cfg(debug_assertions)]
     {
-        style.debug = Default::default();
+        style.debug.debug_on_hover = false;
+        style.debug.show_expand_width = false;
+        style.debug.show_expand_height = false;
+        style.debug.show_resize = false;
+        style.debug.show_interactive_widgets = false;
+        style.debug.show_unaligned = false;
     }
 
     ctx.set_style_of(theme, style);

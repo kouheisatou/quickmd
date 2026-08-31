@@ -14,6 +14,13 @@ pub enum Block {
     Table(String),
     /// 箇条書きと番号つきの並び。丸や番号の位置を揃えるため、自分で描く。
     List(crate::mdlist::List),
+    /// 引用。中に置いた箇条書きや見出しも、まとめて縦棒の内側に入れる。
+    Quote {
+        /// 何段目の引用か（0 から数える）
+        depth: usize,
+        /// `>` を取り除いた中身。この中をもう一度切り分けて描く。
+        inner: Vec<Block>,
+    },
     /// 1行に置かれた絵・動画・音。右クリックで保存できるよう自分で描く。
     Media {
         alt: String,
@@ -264,6 +271,40 @@ fn split_blocks(text: &str, base: &Path) -> Vec<Block> {
                     continue;
                 }
             }
+        }
+
+        // 引用は自分で受け持つ。中に置いた箇条書きや見出しも縦棒の内側へ入れる。
+        if !fence && line.trim_start().starts_with('>') {
+            let mut block = String::new();
+            let mut cur = Some(line);
+            loop {
+                let Some(l) = cur else { break };
+                let t = l.trim_start();
+                match t.strip_prefix('>') {
+                    Some(rest) => {
+                        block.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+                        block.push('\n');
+                    }
+                    None => break,
+                }
+                match lines.peek() {
+                    Some(n) if n.trim_start().starts_with('>') => {
+                        cur = lines.next();
+                        line_no += 1;
+                    }
+                    _ => break,
+                }
+            }
+            if !buf.trim().is_empty() {
+                out.push(Block::Markdown(std::mem::take(&mut buf)));
+            }
+            buf.clear();
+            out.push(Block::Quote {
+                depth: 0,
+                inner: split_blocks(&block, base),
+            });
+            line_no += 1;
+            continue;
         }
 
         // 4つの空白で字下げしたコードも、フェンスのコードと同じ見た目にする

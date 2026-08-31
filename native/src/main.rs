@@ -444,66 +444,17 @@ impl App {
                     ui.add_space(pad);
                     ui.vertical(|ui| {
                         ui.set_max_width(inner);
-                        // 箇条書きの丸は文字と同じ高さの枠に描かれる。
-                        // 文字を枠の上端へ合わせると、丸と文字の高さが揃う。
-                        ui.style_mut().override_text_valign = Some(egui::Align::TOP);
                         ui.add_space(28.0);
                         for block in blocks {
-                            match block {
-                                Block::Markdown(src) => {
-                                    let src = fix_relative_images(src, base.as_deref());
-                                    let ctx = ui.ctx().clone();
-                                    let r = renderer.clone();
-                                    let enable_math = settings.enable_math;
-                                    let em = settings.font_size;
-                                    // 第3引数はインラインかどうかである（真ならインライン）
-                                    let math = move |ui: &mut egui::Ui, tex: &str, inline: bool| {
-                                        draw_math(ui, &ctx, &r, tex, !inline, dark, enable_math, em);
-                                    };
-                                    egui_commonmark::CommonMarkViewer::new()
-                                        .max_image_width(Some(inner as usize))
-                                        .render_math_fn(Some(&math))
-                                        .show(ui, cache, &src);
-                                }
-                                Block::List(list) => {
-                                    if let Some(t) = mdlist::draw(ui, list, dark) {
-                                        toggled = Some(t);
-                                    }
-                                }
-                                Block::Table(src) => {
-                                    draw_table(ui, cache, src, dark, inner);
-                                }
-                                Block::Code { lang, src } => {
-                                    draw_code(ui, lang, src, dark, inner);
-                                }
-                                Block::Media {
-                                    alt,
-                                    link,
-                                    path,
-                                    kind,
-                                } => {
-                                    draw_media(
-                                        ui, renderer, alt, link, path, *kind, dark, inner,
-                                    );
-                                }
-                                Block::Mermaid { src, .. } => {
-                                    draw_mermaid(
-                                        ui,
-                                        renderer,
-                                        src,
-                                        dark,
-                                        settings.enable_mermaid,
-                                        inner,
-                                        settings.font_size,
-                                    );
-                                }
-                            }
+                            draw_block(
+                                ui, block, cache, renderer, settings, dark, inner,
+                                base.as_deref(), &mut toggled,
+                            );
                         }
                         ui.add_space(72.0);
                     });
                 });
             });
-
         if let Some(t) = toggled {
             let _ = mdlist::toggle_in_file(&self.doc.path, t.line, t.now);
             let keep = out.state.offset.y;
@@ -711,6 +662,11 @@ fn settings_form(ui: &mut egui::Ui, s: &mut Settings, dark: bool) -> bool {
     let l = style::look(dark);
     let mut changed = false;
 
+    // チェックの四角は既定だと小さく、他の操作部と釣り合わない
+    ui.spacing_mut().icon_width = 18.0;
+    ui.spacing_mut().icon_width_inner = 11.0;
+    ui.spacing_mut().icon_spacing = 0.0;
+
     egui::Grid::new("settings")
         .num_columns(2)
         .min_col_width(LABEL_W)
@@ -865,9 +821,11 @@ fn slider_row(
     decimals: usize,
 ) -> bool {
     row(ui, label, |ui| {
+        const VALUE_W: f32 = 52.0;
+        let gap = ui.spacing().item_spacing.x;
         let changed = ui
             .add_sized(
-                [FIELD_W - 54.0, 18.0],
+                [FIELD_W - VALUE_W - gap, 18.0],
                 egui::Slider::new(value, range)
                     .show_value(false)
                     .trailing_fill(true),
@@ -875,7 +833,7 @@ fn slider_row(
             .changed();
         let text = format!("{value:.decimals$}");
         ui.allocate_ui_with_layout(
-            egui::vec2(46.0, ROW_H),
+            egui::vec2(VALUE_W, ROW_H),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.label(text);
@@ -972,9 +930,16 @@ fn draw_code(ui: &mut egui::Ui, lang: &str, src: &str, dark: bool, width: f32) {
                             .unwrap_or(f64::NEG_INFINITY)
                     });
                     let now = ui.input(|i| i.time);
-                    let label = if now - copied < 1.5 { "コピーしました" } else { "コピー" };
+                    let label = if now - copied < 1.5 {
+                        "コピーしました"
+                    } else {
+                        "コピー"
+                    };
+                    ui.spacing_mut().button_padding = egui::vec2(9.0, 4.0);
                     if ui
-                        .add(egui::Button::new(egui::RichText::new(label).size(11.0)).small())
+                        .add(egui::Button::new(
+                            egui::RichText::new(label).size(11.5).color(l.fg_dim),
+                        ))
                         .clicked()
                     {
                         ui.ctx().copy_text(body.clone());
@@ -1257,6 +1222,142 @@ fn open_new_window(path: &std::path::Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// ブロック1つを描く。引用の中でも同じ関数を呼ぶ。
+#[allow(clippy::too_many_arguments)]
+fn draw_block(
+    ui: &mut egui::Ui,
+    block: &Block,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    renderer: &Rc<RefCell<Renderer>>,
+    settings: &Settings,
+    dark: bool,
+    width: f32,
+    base: Option<&std::path::Path>,
+    toggled: &mut Option<mdlist::Toggled>,
+) {
+    match block {
+        Block::Markdown(src) => {
+            let src = fix_relative_images(src, base);
+            let ctx = ui.ctx().clone();
+            let r = renderer.clone();
+            let enable_math = settings.enable_math;
+            let em = settings.font_size;
+            // 第3引数はインラインかどうかである（真ならインライン）
+            let math = move |ui: &mut egui::Ui, tex: &str, inline: bool| {
+                draw_math(ui, &ctx, &r, tex, !inline, dark, enable_math, em);
+            };
+            egui_commonmark::CommonMarkViewer::new()
+                .max_image_width(Some(width as usize))
+                .render_math_fn(Some(&math))
+                .show(ui, cache, &src);
+        }
+        Block::List(list) => {
+            if let Some(t) = mdlist::draw(ui, list, dark) {
+                *toggled = Some(t);
+            }
+        }
+        Block::Quote { depth, inner } => {
+            draw_quote(ui, inner, cache, renderer, settings, dark, width, base, toggled, *depth);
+        }
+        Block::Table(src) => {
+            draw_table(ui, cache, src, dark, width);
+        }
+        Block::Code { lang, src } => {
+            draw_code(ui, lang, src, dark, width);
+        }
+        Block::Media {
+            alt,
+            link,
+            path,
+            kind,
+        } => {
+            draw_media(ui, renderer, alt, link, path, *kind, dark, width);
+        }
+        Block::Mermaid { src, .. } => {
+            draw_mermaid(
+                ui,
+                renderer,
+                src,
+                dark,
+                settings.enable_mermaid,
+                width,
+                settings.font_size,
+            );
+        }
+    }
+}
+
+/// 引用。左の縦棒を自分で引き、中身をその内側へ入れる。
+/// 変換器に任せると、引用の中の箇条書きが縦棒の外へ出てしまう。
+#[allow(clippy::too_many_arguments)]
+fn draw_quote(
+    ui: &mut egui::Ui,
+    inner: &[Block],
+    cache: &mut egui_commonmark::CommonMarkCache,
+    renderer: &Rc<RefCell<Renderer>>,
+    settings: &Settings,
+    dark: bool,
+    width: f32,
+    base: Option<&std::path::Path>,
+    toggled: &mut Option<mdlist::Toggled>,
+    depth: usize,
+) {
+    let l = style::look(dark);
+    const BAR_X: f32 = 3.0;
+    const GAP: f32 = 14.0;
+    let inset = BAR_X + GAP;
+
+    ui.add_space(8.0);
+    // 縦棒は、中身を描いたあとで高さが決まる。場所だけ先に取っておく。
+    let bar = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().min.y;
+    let left = ui.cursor().min.x;
+
+    let response = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: inset as i8,
+            right: 0,
+            top: 0,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            ui.set_max_width((width - inset).max(120.0));
+            for b in inner {
+                draw_block(
+                    ui,
+                    b,
+                    cache,
+                    renderer,
+                    settings,
+                    dark,
+                    width - inset,
+                    base,
+                    toggled,
+                );
+            }
+        })
+        .response;
+
+    let bottom = response.rect.bottom();
+    let color = if depth == 0 {
+        l.line
+    } else {
+        l.fg_dim.gamma_multiply(0.6)
+    };
+    ui.painter().set(
+        bar,
+        egui::Shape::rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(left, top),
+                egui::vec2(BAR_X, (bottom - top).max(0.0)),
+            ),
+            1.5,
+            color,
+        ),
+    );
+    ui.add_space(8.0);
 }
 
 /// 表。自分で組んで描く。表として読めなければ、そのまま本文として渡す。

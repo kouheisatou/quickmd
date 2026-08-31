@@ -91,12 +91,14 @@ pub fn bar(
     );
 
     egui::MenuBar::new().ui(&mut left, |ui| {
-        ui.spacing_mut().button_padding = egui::vec2(9.0, 5.0);
+        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
         ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
 
-        ui.menu_button(egui::RichText::new("\u{2630}").size(15.0), |ui| {
-            ui.set_min_width(190.0);
+        // 三本線は図形で描く。記号の字はフォントによって太さも位置も変わる。
+        let icon = egui::Button::new("").min_size(egui::vec2(30.0, 26.0));
+        let (icon_response, _) = egui::containers::menu::MenuButton::from_button(icon).ui(ui, |ui| {
+            ui.set_min_width(200.0);
 
             ui.menu_button("ファイル", |ui| {
                 if ui.button("新しいウィンドウ").clicked() {
@@ -171,8 +173,22 @@ pub fn bar(
             });
         });
 
+        // 三本線を、いま置いたボタンの真ん中へ描く
+        {
+            let c = icon_response.rect.center();
+            let w = 7.0;
+            let p = ui.painter();
+            for dy in [-5.0f32, 0.0, 5.0] {
+                p.line_segment(
+                    [egui::pos2(c.x - w, c.y + dy), egui::pos2(c.x + w, c.y + dy)],
+                    egui::Stroke::new(1.4, l.fg),
+                );
+            }
+        }
+
+        // 開いているファイルの名前を、三本線の右に添える
         if !title.is_empty() {
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.add(
                 egui::Label::new(egui::RichText::new(title).size(12.5).color(l.fg))
                     .truncate()
@@ -192,39 +208,53 @@ pub fn bar(
     );
     right.spacing_mut().item_spacing.x = 0.0;
 
-    if window_button(&mut right, "\u{2715}", l.fg, true).clicked() {
+    if window_button(&mut right, Mark::Close, l.fg, l.line).clicked() {
         window = Some(Window::Close);
     }
-    let mark = if maximized { "\u{2750}" } else { "\u{25a1}" };
-    if window_button(&mut right, mark, l.fg, false).clicked() {
+    let mark = if maximized {
+        Mark::Restore
+    } else {
+        Mark::Maximize
+    };
+    if window_button(&mut right, mark, l.fg, l.line).clicked() {
         window = Some(Window::ToggleMaximize);
     }
-    if window_button(&mut right, "\u{2500}", l.fg, false).clicked() {
+    if window_button(&mut right, Mark::Minimize, l.fg, l.line).clicked() {
         window = Some(Window::Minimize);
     }
 
     (action, window)
 }
 
-/// 窓のボタン1つ。閉じるだけは、触れたときに赤くする。
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+/// 窓のボタン1つ。印は図形で描く。フォントによっては記号が無く、
+/// 別の字に化けたり四角い箱になったりするためである。
 fn window_button(
     ui: &mut egui::Ui,
-    mark: &str,
+    mark: Mark,
     fg: egui::Color32,
-    is_close: bool,
+    line: egui::Color32,
 ) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(44.0, BAR_H), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(46.0, BAR_H), egui::Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
+    let is_close = mark == Mark::Close;
     let hovered = response.hovered();
     let p = ui.painter();
+
     if hovered {
         let bg = if is_close {
             egui::Color32::from_rgb(232, 17, 35)
         } else {
-            egui::Color32::from_gray(128).gamma_multiply(0.25)
+            line
         };
         p.rect_filled(rect, 0.0, bg);
     }
@@ -233,12 +263,63 @@ fn window_button(
     } else {
         fg
     };
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        mark,
-        egui::FontId::proportional(12.0),
-        color,
-    );
+
+    // 印は 10×10 の正方形の中に描く。中心はボタンの中心に合わせる。
+    let c = rect.center();
+    let h = 5.0;
+    let stroke = egui::Stroke::new(1.0, color);
+    match mark {
+        Mark::Minimize => {
+            p.line_segment(
+                [egui::pos2(c.x - h, c.y), egui::pos2(c.x + h, c.y)],
+                stroke,
+            );
+        }
+        Mark::Maximize => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(h * 2.0, h * 2.0)),
+                0.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        Mark::Restore => {
+            // 前後に2枚重なった形
+            p.rect_stroke(
+                egui::Rect::from_center_size(
+                    c + egui::vec2(-1.5, 1.5),
+                    egui::vec2(h * 2.0 - 1.0, h * 2.0 - 1.0),
+                ),
+                0.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            p.rect_stroke(
+                egui::Rect::from_center_size(
+                    c + egui::vec2(1.5, -1.5),
+                    egui::vec2(h * 2.0 - 1.0, h * 2.0 - 1.0),
+                ),
+                0.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        Mark::Close => {
+            p.line_segment(
+                [
+                    egui::pos2(c.x - h, c.y - h),
+                    egui::pos2(c.x + h, c.y + h),
+                ],
+                stroke,
+            );
+            p.line_segment(
+                [
+                    egui::pos2(c.x + h, c.y - h),
+                    egui::pos2(c.x - h, c.y + h),
+                ],
+                stroke,
+            );
+        }
+    }
     response
 }

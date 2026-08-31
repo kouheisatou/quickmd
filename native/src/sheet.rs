@@ -25,6 +25,8 @@ pub struct Sheet {
     focus: Option<(usize, usize)>,
     /// 引きずっている最中か
     dragging: bool,
+    /// 列ごとの寄せ。数値の列は右へ寄せる。
+    right: Vec<bool>,
     /// 並べ替えたあとの行の並び。中身は元の行の番号。
     order: Vec<usize>,
     /// この並びを作ったときの条件
@@ -39,6 +41,7 @@ impl Default for Sheet {
             anchor: None,
             focus: None,
             dragging: false,
+            right: Vec::new(),
             order: Vec::new(),
             order_key: (true, None),
         }
@@ -107,8 +110,34 @@ impl Sheet {
         Some(out)
     }
 
+    /// 列ごとの寄せを決める。半分より多くが数値なら、その列は右へ寄せる。
+    fn ensure_align(&mut self, t: &Table) {
+        if self.right.len() == t.cols {
+            return;
+        }
+        let (_, rows) = self.parts(t);
+        self.right = (0..t.cols)
+            .map(|c| {
+                let mut num = 0usize;
+                let mut all = 0usize;
+                for r in rows.iter().take(300) {
+                    let Some(v) = r.get(c) else { continue };
+                    if v.trim().is_empty() {
+                        continue;
+                    }
+                    all += 1;
+                    if crate::table::is_numeric(v) {
+                        num += 1;
+                    }
+                }
+                all > 0 && num * 2 > all
+            })
+            .collect();
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, dark: bool) {
         self.ensure_order(t);
+        self.ensure_align(t);
         let l = style::look(dark);
         let font = egui::TextStyle::Body.resolve(ui.style());
         let widths = self.measure(ui, t, &font);
@@ -167,7 +196,15 @@ impl Sheet {
 
     fn toolbar(&mut self, ui: &mut egui::Ui, l: &style::Look, t: &Table) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.header_row, "1行目を見出しにする");
+            ui.spacing_mut().icon_width = 18.0;
+            ui.spacing_mut().icon_width_inner = 11.0;
+            ui.spacing_mut().icon_spacing = 7.0;
+            if ui
+                .checkbox(&mut self.header_row, "1行目を見出しにする")
+                .changed()
+            {
+                self.right.clear();
+            }
             ui.add_space(12.0);
             if self.sort.is_some() && ui.button("並び順を戻す").clicked() {
                 self.sort = None;
@@ -219,15 +256,25 @@ impl Sheet {
                     _ => "",
                 };
                 let w = widths[c];
+                let right = self.right.get(c).copied().unwrap_or(false);
                 let resp = self
                     .cell_frame(ui, w, row_h, l.bg_soft, l, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("{name}{arrow}")).strong().color(l.fg),
-                            )
-                            .truncate()
-                            .selectable(false),
-                        );
+                        let layout = if right {
+                            egui::Layout::right_to_left(egui::Align::Center)
+                        } else {
+                            egui::Layout::left_to_right(egui::Align::Center)
+                        };
+                        ui.with_layout(layout, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{name}{arrow}"))
+                                        .strong()
+                                        .color(l.fg),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            );
+                        });
                     })
                     .interact(egui::Sense::click());
                 if resp.clicked() {
@@ -284,11 +331,11 @@ impl Sheet {
                 } else {
                     l.bg
                 };
-                let numeric = crate::table::is_numeric(&text);
+                let right = self.right.get(c).copied().unwrap_or(false);
                 let w = widths[c];
 
                 let resp = self.cell_frame(ui, w, row_h, fill, l, |ui| {
-                    let layout = if numeric {
+                    let layout = if right {
                         egui::Layout::right_to_left(egui::Align::Center)
                     } else {
                         egui::Layout::left_to_right(egui::Align::Center)
